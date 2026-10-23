@@ -1455,7 +1455,8 @@ def collect_all_files(
         candidates = tracked
     else:
         # Fallback: walk directory
-        candidates = [str(p.relative_to(repo_root)) for p in repo_root.rglob("*") if p.is_file()]
+        # No stat here: ignore rules run first, in the loop below.
+        candidates = [str(p.relative_to(repo_root)) for p in repo_root.rglob("*")]
 
     for rel_path in candidates:
         if _should_ignore(rel_path, ignore_patterns):
@@ -1470,13 +1471,13 @@ def collect_all_files(
         if len(str(full_path)) > 1000 or any(len(p.encode()) > 255 for p in full_path.parts):
             logger.debug("Skipping overlong path: %s", rel_path[:120])
             continue
-        if not full_path.is_file():
-            continue
-        if full_path.is_symlink():
-            continue
-        if parser.detect_language(full_path) is None:
-            continue
-        if _is_binary(full_path):
+        try:
+            if not full_path.is_file() or full_path.is_symlink():
+                continue
+            if parser.detect_language(full_path) is None or _is_binary(full_path):
+                continue
+        except OSError as exc:
+            logger.warning("Skipping unreadable path %s: %s", rel_path[:120], exc)
             continue
         files.append(rel_path)
 
@@ -1511,17 +1512,21 @@ def _reconcile_stale_files(
                 relative = str(path.relative_to(repo_root))
             except ValueError:
                 continue
-            if (
-                path.is_file()
-                and not path.is_symlink()
-                and not _should_ignore(relative, ignore_patterns)
-                and parser.detect_language(path) is not None
-                and (
-                    (known_text is not None and stored_file in known_text)
-                    or not _is_binary(path)
-                )
-            ):
-                current_paths.add(stored_file)
+            if _should_ignore(relative, ignore_patterns):
+                continue
+            try:
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and parser.detect_language(path) is not None
+                    and (
+                        (known_text is not None and stored_file in known_text)
+                        or not _is_binary(path)
+                    )
+                ):
+                    current_paths.add(stored_file)
+            except OSError as exc:
+                logger.warning("Skipping unreadable path %s: %s", relative[:120], exc)
     stale_files = sorted(stored_files - current_paths)
     if stale_files:
         store.remove_files_permanently(stale_files, stored_paths=True)
